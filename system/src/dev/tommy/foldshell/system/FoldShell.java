@@ -25,14 +25,16 @@ import java.nio.channels.FileLock;
  */
 public final class FoldShell implements SensorEventListener, DisplayManager.DisplayListener {
     /** Rendering backend. BLUR=V1, SNAPSHOT=V2, MASK=V3, HYBRID=V4 (V2 plane + V3 shade),
-     *  STRETCH=V5 (snapshot slides outward horizontally under the shade and blur). */
+     *  STRETCH=V5 (snapshot slides outward horizontally under the shade and blur),
+     *  DUO=V6 (V4 on the destination panel + snapshot/blur layer on the outgoing panel). */
     public enum Mode {
-        BLUR, SNAPSHOT, MASK, HYBRID, STRETCH;
+        BLUR, SNAPSHOT, MASK, HYBRID, STRETCH, DUO;
         public static Mode parse(String value) {
             if ("v2".equals(value)) return SNAPSHOT;
             if ("v3".equals(value)) return MASK;
             if ("v4".equals(value)) return HYBRID;
             if ("v5".equals(value)) return STRETCH;
+            if ("duo".equals(value)) return DUO;
             return BLUR;
         }
         public String label() {
@@ -41,11 +43,12 @@ public final class FoldShell implements SensorEventListener, DisplayManager.Disp
                 case MASK: return "v3-flat-mask";
                 case HYBRID: return "v4-snapshot-shade";
                 case STRETCH: return "v5-snapshot-stretch";
+                case DUO: return "duo-dual-panel";
                 default: return "compositor-blur";
             }
         }
-        boolean shade() { return this == MASK || this == HYBRID || this == STRETCH; }
-        boolean snapshot() { return this == SNAPSHOT || this == HYBRID || this == STRETCH; }
+        boolean shade() { return this == MASK || this == HYBRID || this == STRETCH || this == DUO; }
+        boolean snapshot() { return this == SNAPSHOT || this == HYBRID || this == STRETCH || this == DUO; }
     }
     private static final String NAME = "FoldTransition-SystemBlur";
     /** The blur must sit above everything the effect draws (snapshot, shade, mask). */
@@ -70,6 +73,8 @@ public final class FoldShell implements SensorEventListener, DisplayManager.Disp
     private final Method crop = method("setWindowCrop", SurfaceControl.class, Rect.class);
     private SurfaceControl surface;
     private VendorMotionMonitor earlyMonitor;
+    private DeviceStatePrelight prelight;
+    private boolean prelightRequested = true;
     private final CoverRotation coverRotation = new CoverRotation();
     private long rotationSequence = -1;
     private boolean gyroDriving, rotationInner;
@@ -88,6 +93,17 @@ public final class FoldShell implements SensorEventListener, DisplayManager.Disp
     private String lastV2Identity = "";
     private boolean lastInner, lastStrongRight;
     private final Runnable frame = this::tick;
+    // DUO mode: the outgoing panel keeps its own snapshot+blur layer on the
+    // non-default layer stack while the destination panel shows live content.
+    private final DuoOutgoingRenderer outgoing = new DuoOutgoingRenderer();
+    private final java.util.concurrent.ExecutorService duoCapture =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "DuoCapture"); t.setDaemon(true); return t;
+            });
+    private FoldMotion.Direction duoDirection;
+    private boolean duoCaptureStarted;
+    private android.graphics.Bitmap duoPending;
+    private long duoCaptureAt;
 
     private static Method method(String name, Class<?>... types) throws Exception {
         return SurfaceControl.Transaction.class.getMethod(name, types);
@@ -127,6 +143,10 @@ public final class FoldShell implements SensorEventListener, DisplayManager.Disp
 
     private void start(long duration, boolean early) throws Exception {
         standalone = duration > 0;
+        if (prelightRequested) {
+            prelight = DeviceStatePrelight.create();
+            log("PRELIGHT " + (prelight != null ? "binder" : "unavailable"));
+        }
         Object info = displayInfo();
         log("display=" + value(info, "logicalWidth") + "x" + value(info, "logicalHeight")
                 + " inner=" + inner(info));
@@ -217,14 +237,27 @@ public final class FoldShell implements SensorEventListener, DisplayManager.Disp
         try {
             // A panel handoff can briefly turn the display off. Keep only the
             // recent hinge-triggered state; display callbacks cannot create it.
-            if (!power.isInteractive()) { destroySurface(); return; }
+            // While a prelight override is engaged the "off" frames are the
+            // self-inflicted display flip, not a real screen-off; the override
+            // releases itself through its own interactive/stale checks.
+            if (mode == Mode.DUO) duoCapture();
+            if (prelight != null) prelight.tick(motion, power.isInteractive(), duoHoldEngage());
+            if (!power.isInteractive()) {
+                if (prelight == null || !prelight.engaged()) destroySurface();
+                else duoFrame();
+                return;
+            }
             long now = SystemClock.elapsedRealtime();
             Object info = displayInfo();
-            if (value(info, "state") != Display.STATE_ON) { destroySurface(); return; }
+            if (value(info, "state") != Display.STATE_ON) {
+                if (prelight == null || !prelight.engaged()) destroySurface();
+                else duoFrame();
+                return;
+            }
             motion.display(inner(info), now);
             float target = motion.amount(now);
             if (!motion.active()) { coverRotation.end(); gyroDriving = false;
-                rotationSequence = -1; destroySurface(); log("END"); return; }
+                rotationSequence = -1; destroySurface(); releasePrelight(); log("END"); return; }
             float dt = lastTick == 0 ? 16 : Math.min(64, now - lastTick);
             rendered += (target - rendered) * Math.min(1f, dt / (motion.releasing() ? 55f : 120f));
             lastTick = now;
@@ -279,6 +312,7 @@ public final class FoldShell implements SensorEventListener, DisplayManager.Disp
                         intensity, motion.visibility(now)));
             } else if (radius > 0) render(info, radius);
             else destroySurface();
+            duoFrame();
             scheduled = true;
             handler.postDelayed(frame, 16);
         } catch (Throwable error) { fail(error); }
@@ -328,10 +362,107 @@ public final class FoldShell implements SensorEventListener, DisplayManager.Disp
         }
         lastEdgeKey = edgeKey; lastRadius = radius; lastWidth = width; lastHeight = height; lastStack = stack; lastInner = isInner; lastStrongRight = strongRight;
     }
+    /** DUO: capture the still-live outgoing panel before the override flips the
+     * default display. The request is issued before prelight.tick() asserts, so
+     * the capture nearly always wins the race against the physical flip. */
+    private void duoCapture() throws Exception {
+        if (prelight == null || duoCaptureStarted || outgoing.attached()) return;
+        // Fire as soon as motion begins: display 0 is always the outgoing panel
+        // until the override flips it, and direction only sets the geometry
+        // flag, which can be resolved later when it latches.
+        if (!motion.active() || motion.releasing()) return;
+        FoldMotion.Direction dir = motion.direction();
+        if (dir != null) duoDirection = dir;
+        duoCaptureStarted = true;
+        duoCaptureAt = SystemClock.elapsedRealtime();
+        Object info = displayInfo();
+        Object address = info.getClass().getField("address").get(info);
+        final long physical = (Long) address.getClass()
+                .getMethod("getPhysicalDisplayId").invoke(address);
+        final int w = value(info, "logicalWidth"), h = value(info, "logicalHeight");
+        log("DUO capture phys=" + physical + " dir=" + dir);
+        duoCapture.execute(() -> {
+            android.graphics.Bitmap bitmap = null;
+            try {
+                bitmap = BlackGradientRenderer.capture(physical, w, h);
+                if (BlackGradientRenderer.isBlank(bitmap)) { bitmap.recycle(); bitmap = null; }
+                final android.graphics.Bitmap result = bitmap;
+                handler.post(() -> {
+                    if (closed || result == null) {
+                        if (result != null) result.recycle();
+                        log("DUO capture blank");
+                        return;
+                    }
+                    duoPending = result; tryDuoAttach();
+                });
+            } catch (Throwable error) {
+                if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+                handler.post(() -> log("DUO capture failed " + error));
+            }
+        });
+    }
+    /** Attaches a pending outgoing capture once the direction is known, and
+     * drops captures that raced the display flip: a bitmap from the wrong
+     * panel would paint the destination's content on the outgoing surface. */
+    private void tryDuoAttach() {
+        if (duoPending == null || duoDirection == null || outgoing.attached()) return;
+        boolean cover = duoDirection == FoldMotion.Direction.OPENING;
+        boolean isCoverBitmap = duoPending.getWidth() < 1500;
+        if (cover != isCoverBitmap) {
+            duoPending.recycle(); duoPending = null;
+            log("DUO capture stale"); return;
+        }
+        try { outgoing.attach(duoPending, 1, cover); }
+        catch (Throwable error) { duoPending.recycle(); fail(error); }
+        duoPending = null;
+    }
+    /** Holds the base-state assert until the outgoing layer is ready so the
+     * panel flip lands with its first frame, not a black gap. A capture that
+     * never resolves still times out so the flip is not delayed forever. */
+    private boolean duoHoldEngage() {
+        if (mode != Mode.DUO || duoDirection == null || outgoing.attached()) return false;
+        return duoCaptureStarted && SystemClock.elapsedRealtime() - duoCaptureAt < 500;
+    }
+    /** Drives the outgoing panel once per frame. p is openness: 0 closed, 1 open. */
+    private void duoFrame() {
+        if (mode != Mode.DUO) return;
+        if (duoDirection == null && motion.direction() != null) duoDirection = motion.direction();
+        tryDuoAttach();
+        if (!outgoing.attached()) return;
+        if (motion.direction() != null && duoDirection != motion.direction()) {
+            outgoing.end(); return;
+        }
+        try { outgoing.update(duoProgress()); }
+        catch (Throwable error) { fail(error); }
+    }
+    private float duoProgress() {
+        float anchor = -1;
+        if (prelight != null) switch (prelight.physical()) {
+            case 0: anchor = 0; break;
+            case 1: anchor = .15f; break;
+            case 2: anchor = .5f; break;
+            case 3: anchor = 1f; break;
+            default: break;
+        }
+        // progress() is normalized to 90deg; openness spans the full 180deg.
+        float gyro = Math.max(0, Math.min(1, coverRotation.progress() / 2f));
+        if (duoDirection == FoldMotion.Direction.CLOSING) {
+            float p = 1 - gyro;
+            return anchor >= 0 ? Math.min(anchor, p) : p;
+        }
+        return anchor >= 0 ? Math.max(anchor, gyro) : gyro;
+    }
     private void destroySurface() {
         if (blackRenderer != null) blackRenderer.clear();
+        outgoing.end();
+        if (duoPending != null && !duoPending.isRecycled()) duoPending.recycle();
+        duoPending = null;
+        duoCaptureStarted = false; duoDirection = null;
         destroyBlurSurface(); lastV2Identity = "";
         rendered = 0; lastTick = 0;
+    }
+    private void releasePrelight() {
+        if (prelight != null) prelight.release();
     }
     private void destroyBlurSurface() {
         if (surface != null) {
@@ -366,7 +497,8 @@ public final class FoldShell implements SensorEventListener, DisplayManager.Disp
         handler.removeCallbacksAndMessages(null);
         sensors.unregisterListener(this);
         displays.unregisterDisplayListener(this);
-        motion.reset(); destroySurface();
+        motion.reset(); destroySurface(); releasePrelight();
+        duoCapture.shutdown();
         if (blackRenderer != null) blackRenderer.close();
         log("STOPPED");
     }
@@ -413,10 +545,12 @@ public final class FoldShell implements SensorEventListener, DisplayManager.Disp
             Context system = (Context) activityThread.getMethod("getSystemContext").invoke(thread);
             Context context = system.createPackageContext("com.android.shell", 0);
             java.util.List<String> options = java.util.Arrays.asList(args);
-            Mode mode = options.contains("v5") ? Mode.STRETCH : options.contains("v4") ? Mode.HYBRID
+            Mode mode = options.contains("duo") ? Mode.DUO : options.contains("v5") ? Mode.STRETCH
+                    : options.contains("v4") ? Mode.HYBRID
                     : options.contains("v3") ? Mode.MASK : options.contains("v2") ? Mode.SNAPSHOT : Mode.BLUR;
             FoldShell shell = new FoldShell(context, mode);
             shell.extraEdgeBlur = !options.contains("no-edge-blur");
+            shell.prelightRequested = !options.contains("noprelight");
             try { shell.start(seconds * 1000, java.util.Arrays.asList(args).contains("early")); Looper.loop(); }
             finally { shell.close(); }
             if (shell.failed) exitCode = 1;

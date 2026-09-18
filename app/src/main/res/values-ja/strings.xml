@@ -28,6 +28,10 @@
     <string name="hint_port">ペア設定ポート</string>
     <string name="hint_code">6桁のペア設定コード</string>
     <string name="licenses">オープンソースライセンス</string>
+    <string name="probe">フォールドプローブ</string>
+    <string name="probe_sub">実験画面: センサー・同時ディスプレイ・両パネル描画</string>
+    <string name="sim">フォールドシミュレーター</string>
+    <string name="sim_sub">ヒンジで駆動する両パネル遷移。横ドラッグで手動スクラブ。</string>
     <string name="licenses_sub">libadb-android、Bouncy Castle など</string>
     <string name="view">表示</string>
     <string name="setup_again">セットアップ手順をもう一度見る</string>

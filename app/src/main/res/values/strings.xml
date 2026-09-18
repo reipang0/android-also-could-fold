@@ -28,6 +28,10 @@
     <string name="hint_port">Pairing port</string>
     <string name="hint_code">6-digit pairing code</string>
     <string name="licenses">Open source licenses</string>
+    <string name="probe">Fold probe</string>
+    <string name="probe_sub">Experimental screen: sensors, concurrent displays, dual-panel rendering</string>
+    <string name="sim">Fold simulator</string>
+    <string name="sim_sub">Dual-panel transition driven by the hinge. Drag sideways to scrub.</string>
     <string name="licenses_sub">libadb-android, Bouncy Castle and more</string>
     <string name="view">View</string>
     <string name="setup_again">Show setup steps again</string>

@@ -196,6 +196,8 @@
             android:text="@string/section_etc" />
 
         <include android:id="@+id/row_setup_again" layout="@layout/row_status" />
+        <include android:id="@+id/row_probe" layout="@layout/row_status" />
+        <include android:id="@+id/row_sim" layout="@layout/row_status" />
         <include android:id="@+id/row_share_log" layout="@layout/row_status" />
         <include android:id="@+id/row_licenses" layout="@layout/row_status" />
 

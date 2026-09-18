@@ -26,7 +26,9 @@ def build():
          ROOT / 'system/tests/FoldMotionTest.java'])
     run([JDK / 'bin/java', '-cp', classes, 'FoldMotionTest'])
     env = dict(os.environ, JAVA_HOME=str(JDK))
-    run([SDK / 'build-tools/36.0.0/d8', '--min-api', '31', '--lib', android,
+    d8 = SDK / 'build-tools/36.0.0' / ('d8.bat' if os.name == 'nt' else 'd8')
+    d8_cmd = ['cmd', '/c', d8] if os.name == 'nt' else [d8]
+    run([*d8_cmd, '--min-api', '31', '--lib', android,
          '--output', dex, *classes.glob('dev/**/*.class')], env=env)
     print(dex / 'classes.dex', flush=True)
 
@@ -36,15 +38,17 @@ parser.add_argument('--v2', action='store_true', help='cover snapshot and black 
 parser.add_argument('--v3', action='store_true', help='flat screen with a gyro-driven black mask; no capture')
 parser.add_argument('--v4', action='store_true', help='V2 snapshot plane with the V3 shade and blur')
 parser.add_argument('--v5', action='store_true', help='snapshot stretched outward under the shade and blur')
+parser.add_argument('--duo', action='store_true', help='dual-panel transition: snapshot/blur layer on the outgoing panel too')
 parser.add_argument('--no-edge-blur', action='store_true', help='V3 comparison: plain gradient blur instead of the shade-matched blur')
 parser.add_argument('--early', action='store_true', help='experimental event-timestamp start detection')
+parser.add_argument('--noprelight', action='store_true', help='disable the early panel pre-light device-state override')
 parser.add_argument('--serial', help='ADB serial, required when multiple devices are attached')
 parser.add_argument('--seconds', type=int, default=600, help='auto-stop after 1..3600 seconds')
 args = parser.parse_args()
 if not 1 <= args.seconds <= 3600:
     parser.error('--seconds must be 1..3600')
-if sum([args.v2, args.v3, args.v4, args.v5]) > 1:
-    parser.error('choose only one of --v2 / --v3 / --v4 / --v5')
+if sum([args.v2, args.v3, args.v4, args.v5, args.duo]) > 1:
+    parser.error('choose only one of --v2 / --v3 / --v4 / --v5 / --duo')
 adb = [SDK / 'platform-tools/adb']
 if args.serial:
     adb += ['-s', args.serial]
@@ -74,5 +78,7 @@ if args.command in ('run', 'probe'):
     if args.v3 and args.command == 'run': mode += ' v3'
     if args.v4 and args.command == 'run': mode += ' v4'
     if args.v5 and args.command == 'run': mode += ' v5'
+    if args.duo and args.command == 'run': mode += ' duo'
     if args.no_edge_blur and args.command == 'run': mode += ' no-edge-blur'
+    if args.noprelight and args.command == 'run': mode += ' noprelight'
     run([*adb, 'shell', f'CLASSPATH={remote} app_process /system/bin {entry} {duration}{mode}'])

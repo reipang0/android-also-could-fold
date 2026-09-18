@@ -300,7 +300,7 @@ final class BlackGradientRenderer {
         lastAlpha = edgeAlpha; lastVisibility = visible; lastLeft = start; lastProgress = coverProgress;
     }
 
-    private static boolean isBlank(Bitmap bitmap) {
+    static boolean isBlank(Bitmap bitmap) {
         for (int y = 0; y < bitmap.getHeight(); y += Math.max(1, bitmap.getHeight() / 32))
             for (int x = 0; x < bitmap.getWidth(); x += Math.max(1, bitmap.getWidth() / 32)) {
                 int pixel = bitmap.getPixel(x, y);
@@ -309,7 +309,7 @@ final class BlackGradientRenderer {
         return true;
     }
     private static float clamp(float x) { return Math.max(0, Math.min(1, x)); }
-    private static Bitmap capture(long physical, int width, int height) throws Exception {
+    static Bitmap capture(long physical, int width, int height) throws Exception {
         IBinder token = (IBinder) SurfaceControl.class.getMethod("getPhysicalDisplayToken", long.class).invoke(null, physical);
         if (token == null) throw new CapturePolicy.Unavailable("V2 display token unavailable");
         String api;

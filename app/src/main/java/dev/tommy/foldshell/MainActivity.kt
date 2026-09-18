@@ -65,6 +65,10 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.manual_pairing).setOnClickListener { OnboardingActivity.manualPairing(this, app) }
         findViewById<View>(R.id.row_setup_again).bindRow("🧭", getString(R.string.setup_again), getString(R.string.setup_again_sub),
             getString(R.string.view), getColor(R.color.text_tertiary)) { openSetup(0) }
+        findViewById<View>(R.id.row_probe).bindRow("🧪", getString(R.string.probe), getString(R.string.probe_sub),
+            getString(R.string.view), getColor(R.color.text_tertiary)) { startActivity(Intent(this, ProbeActivity::class.java)) }
+        findViewById<View>(R.id.row_sim).bindRow("📱", getString(R.string.sim), getString(R.string.sim_sub),
+            getString(R.string.view), getColor(R.color.text_tertiary)) { startActivity(Intent(this, FoldSimActivity::class.java)) }
         findViewById<View>(R.id.row_share_log).bindRow("🩺", getString(R.string.share_log), getString(R.string.share_log_sub),
             getString(R.string.view), getColor(R.color.text_tertiary)) { shareLog() }
         findViewById<View>(R.id.row_licenses).bindRow("📄", getString(R.string.licenses), getString(R.string.licenses_sub),

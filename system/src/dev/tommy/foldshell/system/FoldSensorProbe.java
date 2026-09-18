@@ -68,7 +68,9 @@ public final class FoldSensorProbe implements SensorEventListener {
         }
         final boolean cleanupLid = lidSubscribed;
         for (int type : new int[]{Sensor.TYPE_HINGE_ANGLE, Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_GYROSCOPE,
-                Sensor.TYPE_GRAVITY, Sensor.TYPE_GAME_ROTATION_VECTOR, 65686, 65695}) {
+                Sensor.TYPE_GRAVITY, Sensor.TYPE_GAME_ROTATION_VECTOR, Sensor.TYPE_MAGNETIC_FIELD,
+                Sensor.TYPE_ROTATION_VECTOR, 65686, 65695, 65559, 65649,
+                Sensor.TYPE_ORIENTATION}) {
             Sensor sensor = manager.getDefaultSensor(type);
             if (sensor == null) { System.out.println("type=" + type + " absent"); continue; }
             try {

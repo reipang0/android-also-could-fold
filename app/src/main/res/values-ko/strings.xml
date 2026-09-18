@@ -28,6 +28,10 @@
     <string name="hint_port">페어링 포트</string>
     <string name="hint_code">6자리 페어링 코드</string>
     <string name="licenses">오픈소스 라이선스</string>
+    <string name="probe">폴드 프로브</string>
+    <string name="probe_sub">실험 화면: 센서·동시 디스플레이·양패널 렌더링</string>
+    <string name="sim">폴드 시뮬레이터</string>
+    <string name="sim_sub">힌지로 구동하는 양패널 전환. 옆으로 드래그하면 수동 진행.</string>
     <string name="licenses_sub">libadb-android, Bouncy Castle 등</string>
     <string name="view">보기</string>
     <string name="setup_again">설정 단계 다시 보기</string>
